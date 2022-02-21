@@ -1,0 +1,15 @@
+#+title: ~org-gtd-habitica~
+Integration of ~org-gtd~ and ~habitica~.
+* Installation
+Use ~quelpa-use-package~: 
+#+BEGIN_SRC emacs-lisp
+  (use-package org-gtd-habitica
+    :quelpa (org-gtd-habitica :fetcher github :repo "BohongHuang/org-gtd-habitica")
+    :demand t
+    :after org-gtd)
+#+END_SRC
+* Usage
+~org-gtd-habitica~ will add task to Habitica after you process the task in inbox.
+For those tasks created locally but not existent in Habitica, use ~org-gtd-habitica-migrate~ to
+migrate them. If you change task state on other device or create task offline,
+use ~org-gtd-habitica-sync~ to sync tasks between local file and Habitica server.
