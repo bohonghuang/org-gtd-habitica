@@ -1,4 +1,7 @@
-;;; -*- lexical-binding: t -*-
+;; org-gtd-habitica.el --- Integration of `org-gtd' and `habitica'. -*- lexical-binding: t -*-
+;;; Commentary:
+;; 
+;;    Integration of `org-gtd' and `habitica'.
 
 (require 'habitica)
 (require 'org-gtd)
@@ -211,3 +214,4 @@
 (advice-add #'org-gtd--refile :before #'org-gtd--refile@before)
 
 (provide 'org-gtd-habitica)
+;;; org-gtd-habitica.el ends here
