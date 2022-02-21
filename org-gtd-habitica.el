@@ -1,7 +1,7 @@
-;; org-gtd-habitica.el --- Integration of `org-gtd' and `habitica'. -*- lexical-binding: t -*-
+;;; org-gtd-habitica.el --- Integration of `org-gtd' and `habitica' -*- lexical-binding: t -*-
+
 ;;; Commentary:
-;; 
-;;    Integration of `org-gtd' and `habitica'.
+;;; This package create an integrated workflow for `org-gtd' and `habitica'.
 
 (require 'habitica)
 (require 'org-gtd)
