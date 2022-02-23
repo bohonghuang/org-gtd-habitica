@@ -66,7 +66,7 @@
                    (`(t . ,_) org-gtd-calendar)
                    (`(nil . nil) org-gtd-actions)
                    (`(nil . t) org-gtd-projects)))
-       (subtask-text (and has-subtasks (org-list-to-subtree (org-list-parse-list) (1+ (org-outline-level)))))
+       (subtask-text (and has-subtasks (org-list-to-subtree (org-list-to-lisp) (1+ (org-outline-level)))))
        (`(,subtask-text . ,subtask-list)
         (if has-subtasks
             (with-temp-buffer
@@ -225,16 +225,18 @@
 (advice-add #'org-gtd--refile :before #'org-gtd-habitica-before-org-gtd--refile)
 
 (defun org-gtd-habitica-after-todo-state-change ()
+  (unless (get-buffer "*habitica*") (org-gtd-habitica-refresh))
   (pcase (save-excursion
            (while (> (org-outline-level) 1) (org-up-heading))
            (org-entry-get (point) "ORG_GTD"))    
     ("Projects" (when (string-equal org-state "DONE")
                   (let ((habitica-id (save-excursion (org-up-heading) (org-entry-get (point) "HABITICA_ID"))))
-                    (when habitica-id
-                      (with-habitica-buffer
-                       (org-map-entries
-                        #'org-gtd-habitica-sync-task
-                        (concat "HABITICA_ID=\"" habitica-id "\"")))))))
+                    (if habitica-id
+                        (with-habitica-buffer
+                         (org-map-entries
+                          #'org-gtd-habitica-sync-task
+                          (concat "HABITICA_ID=\"" habitica-id "\"")))
+                      (save-window-excursion (habitica-task-done-up))))))
     (_ (save-window-excursion (habitica-task-done-up)))))
 
 (add-hook 'org-after-todo-state-change-hook #'org-gtd-habitica-after-todo-state-change)
