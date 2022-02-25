@@ -54,14 +54,26 @@
        'tree)
       ret)))
 
-(defun org-gtd-habitica-sync-task ()
+(defun org-gtd-habitica-gtd-id-marker-alist ()
+  (org-map-entries
+   (lambda ()
+     (cons (org-entry-get (point) "HABITICA_ID") (point-marker)))
+   (concat "HABITICA_ID={.+}")
+   (list (org-gtd--path org-gtd-default-file-name))))
+
+(defun org-gtd-habitica-sync-task (&optional gtd-id-marker-alist)
   (pcase-let*
-      ((habitica-id (org-entry-get (point) "HABITICA_ID"))
+      ((gtd-id-marker-alist (or gtd-id-marker-alist (org-gtd-habitica-gtd-id-marker-alist)))
+       (task-command)
+       (task-status (nth 2 (org-heading-components)))
+       (habitica-id (org-entry-get (point) "HABITICA_ID"))
        (heading-and-properties-beg (point))
        (heading-and-properties-end (progn (org-end-of-meta-data t) (point)))
        (heading-and-properties (buffer-substring-no-properties heading-and-properties-beg heading-and-properties-end))
        (has-repeat (org-get-repeat))
        (has-subtasks (org-at-item-p))
+       (gtd-heading-marker (cdr (assoc habitica-id gtd-id-marker-alist)))
+       (gtd-heading-level)
        (gtd-type (pcase (cons has-repeat has-subtasks)
                    (`(t . ,_) org-gtd-calendar)
                    (`(nil . nil) org-gtd-actions)
@@ -74,66 +86,64 @@
               (insert subtask-text)
               (let ((list (org-map-entries
                            (lambda ()
-                             (org-set-property "HABITICA_ID" "")
                              (cons (nth 4 (org-heading-components)) (org-entry-is-done-p))))))
                 (cons (buffer-string) list)))
           '(nil . nil)))
        (subtask-indices (and has-subtasks (--map-indexed (cons (car it) it-index) subtask-list)))
-       (done)
-       (gtd-heading-marker)
-       (gtd-heading-level)
        (subtask-commands))
     (when (and has-subtasks (eq gtd-type org-gtd-actions)) (setq gtd-type org-gtd-projects))
-    (setq gtd-heading-marker
-          (org-map-entries
-           (lambda ()
-             (when (org-entry-is-done-p)
-               (setq done t))
-             (point-marker))
-           (concat "HABITICA_ID=\"" habitica-id "\"")
-           (list (org-gtd--path org-gtd-default-file-name))))
-    (when gtd-heading-marker (setq gtd-heading-marker (car gtd-heading-marker)))
     (if gtd-heading-marker
-        (when has-subtasks       ; 从 habitica 同步子任务到 GTD 中
-          (with-current-buffer (marker-buffer gtd-heading-marker)
-            (goto-char gtd-heading-marker)
-            (setq gtd-heading-level (org-outline-level))
-            (save-restriction
-              (org-narrow-to-subtree)
-              (org-end-of-meta-data t)
-              (set-mark (point-max))
-              (org-map-entries    ; 映射 GTD 的子任务
-               (lambda ()
-                 (let* ((task-name (nth 4 (org-heading-components)))
-                        (task (assoc-string task-name  subtask-list)))
-                   (if task
-                       (pcase-let ((`(,_ . ,status) task))
-                         (pcase `(,(not (null (org-entry-is-done-p))) . ,(not (null status)))
-                           (`(t . nil) (push `(done . ,task-name) subtask-commands)) ; 更改 habitica 子任务状态为完成
-                           (`(nil . t)
-                            (let* ((end (search-forward-regexp "\\(TODO\\)\\|\\(NEXT\\)"))
-                                   (beg (- end 4)))
-                              (delete-region beg end)
-                              (insert "DONE")))) ; 更改 GTD 子任务状态为完成
-                         (setf subtask-list (assoc-delete-all task-name subtask-list)))
-                     (push `(new . ,task-name) subtask-commands)))) ; 向 GTD 插入子任务
-               t
-               'region)
-              (goto-char (point-max))
-              (pcase-dolist (`(,task-name . ,task-status) subtask-list)
-                (org-insert-heading)
-                (insert task-name)
-                (while (<= (org-outline-level) gtd-heading-level) (org-demote))
-                (org-set-property "HABITICA_ID" "")
-                (org-todo (if task-status "DONE" "TODO")))))) ; 向 habitica 插入子任务
-      (with-temp-buffer
+        (progn
+          (when has-subtasks       ; 从 Habitica 同步子任务到 GTD 中
+            (with-current-buffer (marker-buffer gtd-heading-marker)
+              (goto-char gtd-heading-marker)
+              (setq gtd-heading-level (org-outline-level))
+              (save-restriction
+                (org-narrow-to-subtree)
+                (org-end-of-meta-data t)
+                (set-mark (point-max))
+                (org-map-entries    ; 映射 GTD 的子任务
+                 (lambda ()
+                   (let* ((task-name (nth 4 (org-heading-components)))
+                          (task (assoc-string task-name  subtask-list))
+                          (done-p (car (org-entry-is-done-p))))
+                     (if task
+                         (pcase-let ((`(,_ . ,status) task))
+                           (pcase `(,done-p . ,(not (null status)))
+                             (`("DONE" . nil) (push `(done . ,task-name) subtask-commands)) ; 更改 Habitica 子任务状态为完成
+                             (`("CNCL" . ,_) (push `(delete . ,task-name) subtask-commands)) ; 更改 Habitica 子任务状态为完成
+                             (`(nil . t)
+                              (let* ((end (search-forward-regexp "\\(TODO\\)\\|\\(NEXT\\)"))
+                                     (beg (- end 4)))
+                                (delete-region beg end)
+                                (insert "DONE")))) ; 更改 GTD 子任务状态为完成
+                           (setf subtask-list (assoc-delete-all task-name subtask-list)))
+                       (pcase done-p
+                         ("DONE" (push `(new-done . ,task-name) subtask-commands))
+                         ("CNCL")
+                         (_ (push `(new-done . ,task-name) subtask-commands)))))) ; 向 GTD 插入子任务
+                 t
+                 'region)
+                (goto-char (point-max))
+                (pcase-dolist (`(,task-name . ,task-status) subtask-list)
+                  (org-insert-heading)
+                  (insert task-name)
+                  (while (<= (org-outline-level) gtd-heading-level) (org-demote))
+                  (org-todo (if task-status "DONE" "TODO"))))))
+          (setq task-command (pcase (car (with-current-buffer (marker-buffer gtd-heading-marker) (goto-char gtd-heading-marker) (org-entry-is-done-p))) ; GTD 向 Habitica 同步
+                               ("DONE" 'done)
+                               ("CNCL" 'delete))))
+      (with-temp-buffer                                       ; 为 GTD 创建任务
         (org-mode)
         (insert heading-and-properties)
         (when has-subtasks (insert subtask-text))
         (goto-char (point-min))
-        (when (string-equal gtd-type org-gtd-actions)
-          (defvar org-todo-keywords-1)
-          (let ((org-todo-keywords-1 '("TODO" "NEXT" "DONE"))) (org-todo "NEXT")))
+        (search-forward "TODO")
+        (set-mark (point))
+        (backward-word)
+        (delete-active-region)
+        (insert "NEXT")
+        (deactivate-mark)
         (with-org-gtd-refile gtd-type
           (org-refile 3 nil (car (org-refile-get-targets))))))
     (org-narrow-to-subtree)
@@ -145,18 +155,40 @@
            (habitica-score-checklist-item))
           ('new                         ; 新建 Habitica 子任务
            (goto-char (point-max))
-           (habitica-add-item-to-checklist task-name)))))
+           (habitica-add-item-to-checklist task-name))
+          ('new-done
+           (goto-char (point-max))
+           (habitica-add-item-to-checklist task-name)
+           (habitica-score-checklist-item))
+          ('delete
+           (forward-line (cdr (assoc-string task-name subtask-indices)))
+           (habitica-delete-item-from-checklist)))))
     (widen)
-    (when done (habitica-task-done-up))))
+    (goto-char heading-and-properties-beg)
+    (pcase task-command
+      ('done (habitica-up-task))
+      ('delete (habitica-delete-task)))
+    habitica-id))
 
 (defun org-gtd-habitica-sync ()
   (interactive)
   (org-gtd-habitica-refresh)
   (with-habitica-buffer
-   (dolist (habitica-type '("todo" "daily"))
-     (org-map-entries
-      #'org-gtd-habitica-sync-task
-      (concat "HABITICA_TYPE=\"" habitica-type "\""))))
+   (let ((gtd-id-marker-alist (org-gtd-habitica-gtd-id-marker-alist)))
+     (dolist (habitica-type '("todo" "daily"))
+       (dolist (habitica-id (org-map-entries
+                             (apply-partially #'org-gtd-habitica-sync-task gtd-id-marker-alist)
+                             (concat "HABITICA_TYPE=\"" habitica-type "\"")))
+         (setf gtd-id-marker-alist (assoc-delete-all habitica-id gtd-id-marker-alist))))
+     (pcase-dolist (`(,_ . ,marker) gtd-id-marker-alist) ; Habitica 向 GTD 同步（不存在的任务视为完成）
+       (with-current-buffer (marker-buffer marker)
+         (save-excursion
+           (goto-char marker)
+           (unless (org-entry-is-done-p)
+             (let ((end (progn (search-forward-regexp org-todo-regexp) (point)))
+                   (beg (progn (search-backward-regexp org-todo-regexp) (point))))
+               (delete-region beg end)
+               (insert "DONE"))))))))
   (org-map-entries
    #'org-gtd-habitica-migrate
    "HABITICA_TASK"
@@ -212,12 +244,14 @@
 (defun org-gtd-habitica-before-org-gtd--refile (type &rest _)
   (condition-case nil
       (pcase type
-        ((or (pred (apply-partially #'string-equal org-gtd-actions)) (pred (apply-partially #'string-equal org-gtd-projects))) (org-gtd-habitica-todo-new))
-        ((pred (apply-partially #'string-equal org-gtd-calendar))
+        ((pred (lambda (x) (or (string-equal org-gtd-actions x) (string-equal org-gtd-projects x))))
+         (org-gtd-habitica-todo-new))
+        ((pred (lambda (x) (string-equal org-gtd-calendar x)))
          (if (org-get-repeat)
              (org-gtd-habitica-daily-new)
            (org-gtd-habitica-todo-new)
-           (message "Please set timestamp for this task manually."))))
+           (message "Please set timestamp for this task manually.")))
+        (type (error (concat "Unknown GTD type: " type))))
     (error
      (org-back-to-heading)
      (org-set-tags (append (org-get-tags) "HABITICA_TASK")))))
@@ -225,18 +259,24 @@
 (advice-add #'org-gtd--refile :before #'org-gtd-habitica-before-org-gtd--refile)
 
 (defun org-gtd-habitica-after-todo-state-change ()
-  (unless (get-buffer "*habitica*") (org-gtd-habitica-refresh))
   (pcase (save-excursion
            (while (> (org-outline-level) 1) (org-up-heading))
-           (org-entry-get (point) "ORG_GTD"))    
-    ("Projects" (when (string-equal org-state "DONE")
-                  (let ((habitica-id (save-excursion (org-up-heading) (org-entry-get (point) "HABITICA_ID"))))
-                    (if habitica-id
-                        (with-habitica-buffer
-                         (org-map-entries
-                          #'org-gtd-habitica-sync-task
-                          (concat "HABITICA_ID=\"" habitica-id "\"")))
-                      (save-window-excursion (habitica-task-done-up))))))
+           (org-entry-get (point) "ORG_GTD"))    ;; (string-equal org-state "DONE")
+    ((and "Projects"
+          (let habitica-id (save-excursion (org-up-heading) (org-entry-get (point) "HABITICA_ID")))
+          (guard habitica-id))
+     (with-habitica-buffer
+      (org-map-entries
+       #'org-gtd-habitica-sync-task
+       (concat "HABITICA_ID=\"" habitica-id "\""))))
+    ((and (guard (string-equal org-state "CNCL"))
+          (let habitica-id (org-entry-get (point) "HABITICA_ID"))
+          (guard habitica-id))
+     (with-habitica-buffer
+      (org-map-entries
+       #'habitica-delete-task
+       (concat "HABITICA_ID=\"" habitica-id "\""))
+      t))
     (_ (save-window-excursion (habitica-task-done-up)))))
 
 (add-hook 'org-after-todo-state-change-hook #'org-gtd-habitica-after-todo-state-change)
