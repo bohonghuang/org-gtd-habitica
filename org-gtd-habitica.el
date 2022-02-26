@@ -61,6 +61,17 @@
    (concat "HABITICA_ID={.+}")
    (list (org-gtd--path org-gtd-default-file-name))))
 
+(defun org-gtd-habitica-set-todo-state (arg)
+  (let ((todo-state (pcase arg ((pred booleanp) (if arg "DONE" "TODO")) ((pred stringp) arg))))
+    (save-excursion
+    (org-back-to-heading)
+    (let* ((has-todo-state (progn (search-forward-regexp  "\\*+ ") (looking-at-p org-todo-regexp)))
+           (end (progn (when has-todo-state (search-forward-regexp org-todo-regexp (line-end-position))) (point)))
+           (beg (progn (when has-todo-state (search-backward-regexp org-todo-regexp (line-beginning-position))) (point))))
+      (delete-region beg end)
+      (insert todo-state)
+      (unless has-todo-state (insert " "))))))
+
 (defun org-gtd-habitica-sync-task (&optional gtd-id-marker-alist)
   (pcase-let*
       ((gtd-id-marker-alist (or gtd-id-marker-alist (org-gtd-habitica-gtd-id-marker-alist)))
@@ -112,11 +123,7 @@
                            (pcase `(,done-p . ,(not (null status)))
                              (`("DONE" . nil) (push `(done . ,task-name) subtask-commands)) ; 更改 Habitica 子任务状态为完成
                              (`("CNCL" . ,_) (push `(delete . ,task-name) subtask-commands)) ; 更改 Habitica 子任务状态为完成
-                             (`(nil . t)
-                              (let* ((end (search-forward-regexp "\\(TODO\\)\\|\\(NEXT\\)"))
-                                     (beg (- end 4)))
-                                (delete-region beg end)
-                                (insert "DONE")))) ; 更改 GTD 子任务状态为完成
+                             (`(nil . t) (org-gtd-habitica-set-todo-state t))) ; 更改 GTD 子任务状态为完成
                            (setf subtask-list (assoc-delete-all task-name subtask-list)))
                        (pcase done-p
                          ("DONE" (push `(new-done . ,task-name) subtask-commands))
@@ -129,7 +136,7 @@
                   (org-insert-heading)
                   (insert task-name)
                   (while (<= (org-outline-level) gtd-heading-level) (org-demote))
-                  (org-todo (if task-status "DONE" "TODO"))))))
+                  (org-gtd-habitica-set-todo-state (not (null task-status)))))))
           (setq task-command (pcase (car (with-current-buffer (marker-buffer gtd-heading-marker) (goto-char gtd-heading-marker) (org-entry-is-done-p))) ; GTD 向 Habitica 同步
                                ("DONE" 'done)
                                ("CNCL" 'delete))))
@@ -137,13 +144,7 @@
         (org-mode)
         (insert heading-and-properties)
         (when has-subtasks (insert subtask-text))
-        (goto-char (point-min))
-        (search-forward "TODO")
-        (set-mark (point))
-        (backward-word)
-        (delete-active-region)
-        (insert "NEXT")
-        (deactivate-mark)
+        (org-gtd-habitica-set-todo-state "NEXT")
         (with-org-gtd-refile gtd-type
           (org-refile 3 nil (car (org-refile-get-targets))))))
     (org-narrow-to-subtree)
@@ -185,10 +186,7 @@
          (save-excursion
            (goto-char marker)
            (unless (org-entry-is-done-p)
-             (let ((end (progn (search-forward-regexp org-todo-regexp) (point)))
-                   (beg (progn (search-backward-regexp org-todo-regexp) (point))))
-               (delete-region beg end)
-               (insert "DONE"))))))))
+             (org-gtd-habitica-set-todo-state t)))))))
   (org-map-entries
    #'org-gtd-habitica-migrate
    "HABITICA_TASK"
