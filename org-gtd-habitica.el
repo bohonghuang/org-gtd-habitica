@@ -5,6 +5,7 @@
 
 (require 'habitica)
 (require 'org-gtd)
+(require 'markdown-mode)
 
 (defconst org-gtd-habitica-buffer-name "*habitica*")
 (defconst org-gtd-habitica-stats-name "Stats")
@@ -54,6 +55,72 @@
        'tree)
       ret)))
 
+(defmacro with-habitica-id (habitica-id &rest body)
+  `(with-habitica-buffer
+    (habitica--goto-task ,habitica-id)
+    ,@body))
+
+(defmacro org-gtd-habitica-post-command (&rest body)
+  `(let (fun)
+    (setq fun (lambda ()
+                (remove-hook 'post-command-hook fun)
+                ,@body))
+    (add-hook 'post-command-hook fun)))
+
+(defun org-gtd-habitica--replace-markup-delimiter (regexp md-delimiter org-delimiter)
+  (pcase-let ((`(,regexp . ,group) regexp)
+              (`(,md-delimiter-beg . ,md-delimiter-end)
+               (if (consp md-delimiter) md-delimiter (cons md-delimiter md-delimiter)))
+              (`(,org-delimiter-beg . ,org-delimiter-end)
+               (if (consp org-delimiter) org-delimiter (cons org-delimiter org-delimiter))))
+    (save-excursion
+      (while (search-forward-regexp regexp nil t)
+        (save-excursion
+          (let ((string (match-string group))
+                (beg (- (match-beginning group) (length md-delimiter-beg)))
+                (end (+ (match-end group) (length md-delimiter-end))))
+            (goto-char beg)
+            (delete-region beg end)
+            (insert org-delimiter-beg string org-delimiter-end)))))))
+
+(defun org-gtd-habitica--markdown-to-org (&optional buffer-or-name)
+  (with-current-buffer (or buffer-or-name (current-buffer))
+    (goto-char (point-min))
+    (save-excursion
+      (while (search-forward-regexp markdown-regex-header nil t)
+        (replace-string-in-region "#" "*" (match-beginning 4) (match-end 4))))
+    (org-gtd-habitica--replace-markup-delimiter (cons markdown-regex-bold 4) "**" "\uffff")
+    (org-gtd-habitica--replace-markup-delimiter (cons markdown-regex-italic 3) "*" "/")
+    (org-gtd-habitica--replace-markup-delimiter (cons "\uffff\\(.+\\)\uffff" 1) "\uffff" "*")
+    (org-gtd-habitica--replace-markup-delimiter (cons markdown-regex-code 3) "\uffff" "~")))
+
+(defun org-gtd-habitica--org-to-markdown (&optional buffer-or-name)
+  (with-current-buffer (or buffer-or-name (current-buffer))
+    (goto-char (point-min))
+    (set-mark (point))
+    (goto-char (point-max))
+    (org-md-convert-region-to-md)
+    (deactivate-mark)
+    (goto-char (point-min))
+    (when (search-forward-regexp "\\(\\(# Table of Contents\\)\\| \\|\n\\)*" nil t)
+      (delete-region (point-min) (point)))
+    (goto-char (point-max))
+    (when (search-backward-regexp "\\( \\|\n\\)" nil t)
+      (delete-region (point) (point-max)))))
+
+(defun org-gtd-habitica--org-to-markdown-string (string)
+  (with-temp-buffer
+    (insert string)
+    (org-mode)
+    (org-gtd-habitica--org-to-markdown)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun org-gtd-habitica--markdown-to-org-string (string)
+  (with-temp-buffer
+    (insert string)
+    (org-gtd-habitica--markdown-to-org)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
 (defun org-gtd-habitica-gtd-id-marker-alist ()
   (org-map-entries
    (lambda ()
@@ -65,18 +132,17 @@
   (let ((todo-state (pcase arg ((pred booleanp) (if arg "DONE" "TODO")) ((pred stringp) arg))))
     (save-excursion
     (org-back-to-heading)
-    (let* ((has-todo-state (progn (search-forward-regexp  "\\*+ ") (looking-at-p org-todo-regexp)))
-           (end (progn (when has-todo-state (search-forward-regexp org-todo-regexp (line-end-position))) (point)))
-           (beg (progn (when has-todo-state (search-backward-regexp org-todo-regexp (line-beginning-position))) (point))))
-      (delete-region beg end)
-      (insert todo-state)
-      (unless has-todo-state (insert " "))))))
+    (search-forward-regexp  "\\*+ ")
+    (if (looking-at org-todo-regexp)
+        (progn (delete-region (match-beginning 0) (match-end 0))
+               (insert todo-state))
+      (insert todo-state " ")))))
 
 (defun org-gtd-habitica-sync-task (&optional gtd-id-marker-alist)
   (pcase-let*
       ((gtd-id-marker-alist (or gtd-id-marker-alist (org-gtd-habitica-gtd-id-marker-alist)))
        (task-command)
-       (task-status (nth 2 (org-heading-components)))
+       (task-status (org-get-todo-state (org-heading-components)))
        (habitica-id (org-entry-get (point) "HABITICA_ID"))
        (heading-and-properties-beg (point))
        (heading-and-properties-end (progn (org-end-of-meta-data t) (point)))
@@ -85,7 +151,7 @@
        (has-subtasks (org-at-item-p))
        (gtd-heading-marker (cdr (assoc habitica-id gtd-id-marker-alist)))
        (gtd-heading-level)
-       (gtd-type (pcase (cons has-repeat has-subtasks)
+       (gtd-type (pcase (cons (not (null has-repeat)) (not (null has-subtasks)))
                    (`(t . ,_) org-gtd-calendar)
                    (`(nil . nil) org-gtd-actions)
                    (`(nil . t) org-gtd-projects)))
@@ -257,25 +323,26 @@
 (advice-add #'org-gtd--refile :before #'org-gtd-habitica-before-org-gtd--refile)
 
 (defun org-gtd-habitica-after-todo-state-change ()
-  (pcase (save-excursion
-           (while (> (org-outline-level) 1) (org-up-heading))
-           (org-entry-get (point) "ORG_GTD"))    ;; (string-equal org-state "DONE")
-    ((and "Projects"
-          (let habitica-id (save-excursion (org-up-heading) (org-entry-get (point) "HABITICA_ID")))
-          (guard habitica-id))
-     (with-habitica-buffer
-      (org-map-entries
-       #'org-gtd-habitica-sync-task
-       (concat "HABITICA_ID=\"" habitica-id "\""))))
-    ((and (guard (string-equal org-state "CNCL"))
-          (let habitica-id (org-entry-get (point) "HABITICA_ID"))
-          (guard habitica-id))
-     (with-habitica-buffer
-      (org-map-entries
-       #'habitica-delete-task
-       (concat "HABITICA_ID=\"" habitica-id "\""))
-      t))
-    (_ (save-window-excursion (habitica-task-done-up)))))
+  (unless habitica-triggered-state-change-p
+    (let ((habitica-triggered-state-change-p t))
+      (pcase (save-excursion
+               (while (org-up-heading-safe) (org-up-heading))
+               (org-entry-get (point) "ORG_GTD"))    ;; (string-equal org-state "DONE")
+        ((and "Projects"
+              (let habitica-id (save-excursion (org-up-heading) (org-entry-get (point) "HABITICA_ID")))
+              (guard habitica-id))
+         (org-gtd-habitica-post-command
+          (with-habitica-id habitica-id (org-gtd-habitica-sync-task))))
+        ((and (guard (string-equal org-state "CNCL"))
+              (let habitica-id (org-entry-get (point) "HABITICA_ID"))
+              (guard habitica-id))
+         (org-gtd-habitica-post-command
+          (with-habitica-id habitica-id (habitica-delete-task))))
+        ((and (guard (string-equal org-state "DONE"))
+              (let habitica-id (org-entry-get (point) "HABITICA_ID"))
+              (guard habitica-id))
+         (org-gtd-habitica-post-command
+          (with-habitica-id habitica-id (habitica-up-task))))))))
 
 (add-hook 'org-after-todo-state-change-hook #'org-gtd-habitica-after-todo-state-change)
 
