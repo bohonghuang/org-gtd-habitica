@@ -50,7 +50,8 @@
       (org-map-entries
        (lambda ()
          (let ((current-task-name (nth 4 (org-heading-components))))
-           (setq ret (or ret (when (string-equal current-task-name ,task-name) ,@body)))))
+           (setq ret (or ret (when (string-equal (string-trim (string-trim-right current-task-name "::")) ,task-name)
+                               ,@body)))))
        "LEVEL=2"
        'tree)
       ret)))
@@ -142,7 +143,7 @@
   (pcase-let*
       ((gtd-id-marker-alist (or gtd-id-marker-alist (org-gtd-habitica-gtd-id-marker-alist)))
        (task-command)
-       (task-status (org-get-todo-state (org-heading-components)))
+       (task-status (org-get-todo-state))
        (habitica-id (org-entry-get (point) "HABITICA_ID"))
        (heading-and-properties-beg (point))
        (heading-and-properties-end (progn (org-end-of-meta-data t) (point)))
@@ -281,7 +282,7 @@
     (org-set-property "HABITICA_ID" habitica-id)
     (message "Please set timestamp and repeat method for this task manually.")))
 
-(defun org-gtd-habitica-todo-new ()
+(defun org-gtd-habitica-todo-new (&optional task-property-plist)
   (let ((task-name (nth 4 (org-heading-components)))
         (habitica-id))
     (with-habitica-type
@@ -292,6 +293,8 @@
           (with-habitica-task
            org-gtd-habitica-todos-name
            task-name
+           (when-let ((difficulty (plist-get task-property-plist :difficulty))) ; 设置难度
+             (habitica-set-difficulty difficulty))
            (org-entry-get (point) "HABITICA_ID")))
     (org-set-property "HABITICA_ID" habitica-id)
     (org-map-entries                    ; 添加子任务
@@ -308,8 +311,14 @@
 (defun org-gtd-habitica-before-org-gtd--refile (type &rest _)
   (condition-case nil
       (pcase type
-        ((pred (lambda (x) (or (string-equal org-gtd-actions x) (string-equal org-gtd-projects x))))
+        ((pred (lambda (x) (string-equal org-gtd-actions x)))
          (org-gtd-habitica-todo-new))
+        ((pred (lambda (x) (string-equal org-gtd-projects x)))
+         (save-excursion
+           (if-let ((next-sibling (org-gtd-habitica-sexp-property "HABITICA_NEXT_SIBLING")))
+               (progn (org-next-visible-heading 1)
+                      (org-gtd-habitica-todo-new next-sibling))
+             (org-gtd-habitica-todo-new))))
         ((pred (lambda (x) (string-equal org-gtd-calendar x)))
          (if (org-get-repeat)
              (org-gtd-habitica-daily-new)
@@ -322,27 +331,40 @@
 
 (advice-add #'org-gtd--refile :before #'org-gtd-habitica-before-org-gtd--refile)
 
+(defun org-gtd-habitica-sexp-property (property-name)
+  (when-let ((property (org-entry-get (point) property-name)))
+    (car (read-from-string property))))
+
 (defun org-gtd-habitica-after-todo-state-change ()
   (unless habitica-triggered-state-change-p
-    (let ((habitica-triggered-state-change-p t))
-      (pcase (save-excursion
-               (while (org-up-heading-safe) (org-up-heading))
-               (org-entry-get (point) "ORG_GTD"))    ;; (string-equal org-state "DONE")
-        ((and "Projects"
-              (let habitica-id (save-excursion (org-up-heading) (org-entry-get (point) "HABITICA_ID")))
-              (guard habitica-id))
-         (org-gtd-habitica-post-command
-          (with-habitica-id habitica-id (org-gtd-habitica-sync-task))))
-        ((and (guard (string-equal org-state "CNCL"))
-              (let habitica-id (org-entry-get (point) "HABITICA_ID"))
-              (guard habitica-id))
-         (org-gtd-habitica-post-command
-          (with-habitica-id habitica-id (habitica-delete-task))))
-        ((and (guard (string-equal org-state "DONE"))
-              (let habitica-id (org-entry-get (point) "HABITICA_ID"))
-              (guard habitica-id))
-         (org-gtd-habitica-post-command
-          (with-habitica-id habitica-id (habitica-up-task))))))))
+    (let ((habitica-triggered-state-change-p t) habitica-id)
+      (cond     ;; (string-equal org-state "DONE")
+       ((and (string-equal org-state "DONE")
+             (setq habitica-id (org-entry-get (point) "HABITICA_ID")))
+        (org-gtd-habitica-post-command
+         (with-habitica-id habitica-id (habitica-up-task))))
+       ((and (string-equal org-state "CNCL")
+             (setq habitica-id (org-entry-get (point) "HABITICA_ID")))
+        (org-gtd-habitica-post-command
+         (with-habitica-id habitica-id (habitica-delete-task))))
+       ((string-equal "Projects" (save-excursion
+                                   (while (org-up-heading-safe) (org-up-heading))
+                                   (org-entry-get (point) "ORG_GTD")))
+        (let ((next-sibling (save-excursion (org-up-heading)
+                                            (setq habitica-id (org-entry-get (point) "HABITICA_ID"))
+                                            (org-gtd-habitica-sexp-property "HABITICA_NEXT_SIBLING")))
+              (task-name (nth 4 (org-heading-components)))
+              (gtd-heading-marker (point-marker)))
+          (if habitica-id               ; 主任务作为 To-dos 中的一个任务，子任务作为清单列表
+              (org-gtd-habitica-post-command
+               (with-habitica-id habitica-id (org-gtd-habitica-sync-task)))
+            (when (and (string-equal org-state "NEXT")
+                       (null (org-entry-get (point) "HABITICA_ID"))
+                       next-sibling) ; 子任务作为 To-dos 中的一个任务（主任务需要有 `HABITICA_DIFFICULTY' 这个属性）
+              (org-gtd-habitica-post-command
+               (with-current-buffer (marker-buffer gtd-heading-marker)
+                 (goto-char gtd-heading-marker)
+                 (org-gtd-habitica-todo-new next-sibling))))))))))) ; 相当于 `org-gtd-habitica-todo-new'
 
 (add-hook 'org-after-todo-state-change-hook #'org-gtd-habitica-after-todo-state-change)
 
