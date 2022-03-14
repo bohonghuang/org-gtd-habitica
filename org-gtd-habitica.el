@@ -211,7 +211,8 @@
         (org-mode)
         (insert heading-and-properties)
         (when has-subtasks (insert subtask-text))
-        (org-gtd-habitica-set-todo-state "NEXT")
+        (goto-char (point-min))
+        (org-gtd-habitica-set-todo-state (if (string-equal gtd-type org-gtd-calendar) "TODO" "NEXT"))
         (with-org-gtd-refile gtd-type
           (org-refile 3 nil (car (org-refile-get-targets))))))
     (org-narrow-to-subtree)
@@ -348,7 +349,7 @@
         (org-gtd-habitica-post-command
          (with-habitica-id habitica-id (habitica-delete-task))))
        ((string-equal "Projects" (save-excursion
-                                   (while (org-up-heading-safe) (org-up-heading))
+                                   (while (> (org-outline-level) 1) (org-up-heading))
                                    (org-entry-get (point) "ORG_GTD")))
         (let ((next-sibling (save-excursion (org-up-heading)
                                             (setq habitica-id (org-entry-get (point) "HABITICA_ID"))
