@@ -184,17 +184,16 @@
                  (lambda ()
                    (let* ((task-name (nth 4 (org-heading-components)))
                           (task (assoc-string task-name  subtask-list))
-                          (done-p (car (org-entry-is-done-p))))
+                          (todo-state (org-get-todo-state)))
                      (if task
                          (pcase-let ((`(,_ . ,status) task))
-                           (pcase `(,done-p . ,(not (null status)))
+                           (pcase `(,todo-state . ,(not (null status)))
                              (`("DONE" . nil) (push `(done . ,task-name) subtask-commands)) ; 更改 Habitica 子任务状态为完成
-                             (`("CNCL" . ,_) (push `(delete . ,task-name) subtask-commands)) ; 更改 Habitica 子任务状态为完成
-                             (`(nil . t) (org-gtd-habitica-set-todo-state t))) ; 更改 GTD 子任务状态为完成
+                             (`(,(or "CNCL" 'nil) . ,_) (push `(delete . ,task-name) subtask-commands)) ; 删除 Habitica 子任务
+                             (`(,_ . t) (org-gtd-habitica-set-todo-state t))) ; 更改 GTD 子任务状态为完成
                            (setf subtask-list (assoc-delete-all task-name subtask-list)))
-                       (pcase done-p
-                         ("DONE" (push `(new-done . ,task-name) subtask-commands))
-                         ("CNCL")
+                       (pcase todo-state
+                         ((or "CNCL" 'nil))
                          (_ (push `(new-done . ,task-name) subtask-commands)))))) ; 向 GTD 插入子任务
                  t
                  'region)
@@ -300,12 +299,14 @@
     (org-set-property "HABITICA_ID" habitica-id)
     (org-map-entries                    ; 添加子任务
      (lambda ()
-       (save-window-excursion
-         (let ((subtask-name (nth 4 (org-heading-components))))
-           (with-habitica-task
-            org-gtd-habitica-todos-name
-            task-name
-            (habitica-add-item-to-checklist subtask-name)))))
+       (when-let ((todo-state (org-get-todo-state)))
+         (unless (string-equal todo-state "CNCL")
+           (save-window-excursion
+             (let ((subtask-name (nth 4 (org-heading-components))))
+               (with-habitica-task
+                org-gtd-habitica-todos-name
+                task-name
+                (habitica-add-item-to-checklist subtask-name)))))))
      (concat "LEVEL=" (number-to-string (1+ (org-outline-level))))
      'tree)))
 
