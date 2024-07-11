@@ -154,7 +154,7 @@
        (gtd-heading-level)
        (gtd-type (pcase (cons (not (null has-repeat)) (not (null has-subtasks)))
                    (`(t . ,_) org-gtd-calendar)
-                   (`(nil . nil) org-gtd-actions)
+                   (`(nil . nil) org-gtd-action)
                    (`(nil . t) org-gtd-projects)))
        (subtask-text (and has-subtasks (org-list-to-subtree (org-list-to-lisp) (1+ (org-outline-level)))))
        (`(,subtask-text . ,subtask-list)
@@ -169,7 +169,7 @@
           '(nil . nil)))
        (subtask-indices (and has-subtasks (--map-indexed (cons (car it) it-index) subtask-list)))
        (subtask-commands))
-    (when (and has-subtasks (eq gtd-type org-gtd-actions)) (setq gtd-type org-gtd-projects))
+    (when (and has-subtasks (eq gtd-type org-gtd-action)) (setq gtd-type org-gtd-projects))
     (if gtd-heading-marker
         (progn
           (when has-subtasks       ; 从 Habitica 同步子任务到 GTD 中
@@ -313,7 +313,7 @@
 (defun org-gtd-habitica-before-org-gtd--refile (type &rest _)
   (condition-case nil
       (pcase type
-        ((pred (lambda (x) (string-equal org-gtd-actions x)))
+        ((pred (lambda (x) (string-equal org-gtd-action x)))
          (org-gtd-habitica-todo-new))
         ((pred (lambda (x) (string-equal org-gtd-projects x)))
          (save-excursion
@@ -331,7 +331,7 @@
      (org-back-to-heading)
      (org-set-tags (append (org-get-tags) "HABITICA_TASK")))))
 
-(advice-add #'org-gtd--refile :before #'org-gtd-habitica-before-org-gtd--refile)
+(advice-add #'org-gtd-refile--do :before #'org-gtd-habitica-before-org-gtd--refile)
 
 (defun org-gtd-habitica-sexp-property (property-name)
   (when-let ((property (org-entry-get (point) property-name)))
